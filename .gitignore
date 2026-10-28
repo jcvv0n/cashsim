@@ -1,0 +1,12 @@
+node_modules
+dist
+.screenshots
+.wrangler
+.dev.vars
+.cloudflare-secrets.txt
+wrangler.generated.jsonc
+.env
+.env.*
+!.env.example
+.DS_Store
+*.local

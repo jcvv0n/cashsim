@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f5f2" />
+    <title>CashSim · 现金沙盘</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">¥</div>
+          <div class="brand-text">
+            <h1>CashSim</h1>
+            <p>现金沙盘 · 按月推演现金流</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <span class="sync-status connecting" id="sync-status">连接中…</span>
+          <button class="btn" id="btn-import" type="button">导入</button>
+          <button class="btn" id="btn-export" type="button">导出</button>
+          <button class="btn btn-ghost" id="btn-reset" type="button">重置示例</button>
+          <button class="btn btn-ghost" id="btn-logout" type="button" hidden>退出</button>
+        </div>
+      </header>
+
+      <section class="kpis" id="kpis"></section>
+
+      <main class="layout">
+        <section class="panel projection-panel">
+          <div class="panel-head">
+            <div>
+              <h2>月度现金流</h2>
+              <p class="muted">收入 − 固定还款 − 账单/生活费 + 一次性事件</p>
+            </div>
+            <div class="chart-legend">
+              <span><i class="dot dot-balance"></i>期末现金</span>
+              <span><i class="dot dot-floor"></i>安全线</span>
+              <span><i class="dot dot-zero"></i>0</span>
+            </div>
+          </div>
+          <div class="chart-box"><div id="chart"></div></div>
+          <div class="table-scroll">
+            <table class="projection-table">
+              <thead>
+                <tr>
+                  <th>月份</th>
+                  <th class="num">收入</th>
+                  <th class="num">固定还款</th>
+                  <th class="num">已出账单</th>
+                  <th class="num">生活估算</th>
+                  <th class="num">一次性</th>
+                  <th class="num">净现金流</th>
+                  <th class="num">期末现金</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="projection-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="sidebar">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>基础设置</h2>
+                <p class="muted">改完自动重算</p>
+              </div>
+            </div>
+            <form class="settings-grid" id="settings-form">
+              <label>起始月
+                <input type="month" id="set-start-month" />
+              </label>
+              <label>期初现金（元）
+                <input type="number" step="0.01" min="0" inputmode="decimal" id="set-opening-cash" />
+              </label>
+              <label>安全线（元）
+                <input type="number" step="0.01" min="0" inputmode="decimal" id="set-safety-floor" />
+              </label>
+              <label>推演月数
+                <select id="set-horizon">
+                  <option value="12">12 个月</option>
+                  <option value="24">24 个月</option>
+                  <option value="36">36 个月</option>
+                  <option value="60">60 个月</option>
+                </select>
+              </label>
+              <label>每月生活费（元）
+                <input type="number" step="0.01" min="0" inputmode="decimal" id="set-budget" />
+              </label>
+              <label>生活费起始月
+                <input type="month" id="set-budget-start" />
+              </label>
+            </form>
+            <p class="hint">生活费只用于没有实际账单的月份；录入账单后自动停用，避免重复计算。</p>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>每月收入</h2><p class="muted">不填结束月 = 一直持续</p></div>
+              <button class="btn btn-small" id="add-income" type="button">+ 添加</button>
+            </div>
+            <div class="item-list" id="income-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>固定还款</h2><p class="muted">房贷、车贷、分期</p></div>
+              <button class="btn btn-small" id="add-fixed" type="button">+ 添加</button>
+            </div>
+            <div class="item-list" id="fixed-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>信用卡账单</h2><p class="muted">填“还款月份”，可多笔</p></div>
+              <button class="btn btn-small" id="add-bill" type="button">+ 添加</button>
+            </div>
+            <div class="item-list" id="bill-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>一次性事件</h2><p class="muted">正数收入，负数支出</p></div>
+              <button class="btn btn-small" id="add-oneoff" type="button">+ 添加</button>
+            </div>
+            <div class="item-list" id="oneoff-list"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <div id="boot-screen" class="boot-screen">
+      <div class="boot-card">
+        <div class="brand-mark">¥</div>
+        <p>正在加载 CashSim…</p>
+      </div>
+    </div>
+
+    <div id="auth-screen" class="auth-screen" hidden>
+      <form class="auth-card" id="login-form">
+        <div class="brand-mark">¥</div>
+        <h2>CashSim</h2>
+        <p>输入访问密码进入现金沙盘</p>
+        <input
+          type="password"
+          id="login-passcode"
+          autocomplete="current-password"
+          placeholder="访问密码"
+          required
+        />
+        <button type="submit" class="btn btn-primary">进入</button>
+        <div class="form-error" id="login-error" aria-live="polite"></div>
+      </form>
+    </div>
+
+    <div id="detail-popover" class="detail-popover" hidden role="dialog" aria-label="金额明细">
+      <div class="detail-head">
+        <div>
+          <div class="detail-title"></div>
+          <div class="detail-sub"></div>
+        </div>
+        <button type="button" class="detail-close" aria-label="关闭明细">×</button>
+      </div>
+      <div class="detail-list"></div>
+      <div class="detail-total">
+        <span>合计</span>
+        <strong></strong>
+      </div>
+    </div>
+
+    <dialog id="edit-dialog" class="edit-dialog"></dialog>
+    <input type="file" id="file-input" accept="application/json" hidden />
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

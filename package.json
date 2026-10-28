@@ -1,0 +1,36 @@
+{
+  "name": "cashsim",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "cf:config": "node scripts/render-wrangler.mjs",
+    "d1:ensure": "node scripts/ensure-d1.mjs",
+    "dev:api": "npm run cf:config && wrangler dev --config wrangler.generated.jsonc --port 8787",
+    "dev:full": "npm run build && concurrently -k -n api,web -c yellow,cyan \"npm:dev:api\" \"npm:dev\"",
+    "build": "tsc && tsc -p worker/tsconfig.json && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "deploy": "npm run build && node scripts/with-d1.mjs -- wrangler deploy --config wrangler.generated.jsonc",
+    "deploy:dry": "npm run build && npm run cf:config && wrangler deploy --config wrangler.generated.jsonc --dry-run --outdir=.wrangler/dry-run",
+    "secrets:push": "npm run cf:config && node scripts/push-secrets.mjs",
+    "db:migrate:local": "npm run cf:config && wrangler d1 execute cashsim-db --local --config wrangler.generated.jsonc --file=./migrations/0001_init.sql",
+    "db:migrate:remote": "node scripts/with-d1.mjs -- wrangler d1 execute cashsim-db --remote --config wrangler.generated.jsonc --file=./migrations/0001_init.sql"
+  },
+  "dependencies": {
+    "echarts": "^6.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261028.1",
+    "concurrently": "^10.0.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.154.0"
+  }
+}
