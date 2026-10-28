@@ -87,6 +87,23 @@ npm run d1:ensure       # 不存在则创建，并打印 database_id
 npx wrangler d1 list
 ```
 
+### GitHub 自动部署（Cloudflare Workers Builds）
+
+1. 先按上面的步骤创建 D1、执行远程建表，并拿到 `database_id`。
+2. Cloudflare Dashboard → Workers & Pages → Create → Connect to Git，选择 `jcvv0n/cashsim`。
+3. 构建配置：
+   - Build command: `npm run build && node scripts/render-wrangler.mjs --require`
+   - Deploy command: `npx wrangler deploy --config wrangler.generated.jsonc`
+   - Node version: `24`（或设置环境变量 `NODE_VERSION=24`）
+4. 构建环境变量：
+   - `DATABASE_ID` = 你的 D1 database_id
+5. Worker 运行时 Secret（Settings → Variables and Secrets）：
+   - `APP_PASSCODE`
+   - `SESSION_SECRET`
+6. 之后每次 push 到 `main`，Cloudflare 会自动构建并部署。
+
+说明：`DATABASE_ID` 是构建时变量，不是运行时 Secret；它只用于生成 `wrangler.generated.jsonc` 里的 D1 绑定。Worker 运行时仍然只读 `env.DB`。
+
 ### CI / 非交互部署
 
 Wrangler 支持从环境变量读取 Cloudflare 凭据：
