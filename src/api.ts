@@ -23,8 +23,21 @@ export class ConflictError extends Error {
 export async function fetchState(): Promise<StateResponse> {
   const response = await fetch("/api/state", { credentials: "same-origin" });
   if (response.status === 401) throw new UnauthorizedError();
-  if (!response.ok) throw new Error(`加载失败：${response.status}`);
+  if (!response.ok) throw new Error(await errorMessage(response, "加载失败"));
   return response.json() as Promise<StateResponse>;
+}
+
+async function errorMessage(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    if (typeof body.error === "string" && body.error) return body.error;
+  } catch {
+    // 响应不是 JSON 时退回状态码
+  }
+  return `${fallback}：${response.status}`;
 }
 
 export async function saveState(

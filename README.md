@@ -52,11 +52,13 @@ npm run dev:full                 # http://127.0.0.1:5173
 npx wrangler login
 ```
 
-### 2. 初始化远程表（首次会自动创建 D1）
+### 2. 初始化远程表（可选）
 
 ```bash
 npm run db:migrate:remote
 ```
+
+这一步是可选的：Worker 首次访问 `/api/state` 时会自动执行 `CREATE TABLE IF NOT EXISTS app_state`，忘记建表也能正常使用。提前执行可以避免首次登录多一次建表写入。
 
 脚本会先执行 `wrangler d1 list --json` 查找 `cashsim-db`，不存在就自动创建，然后把 ID 注入生成配置并执行建表。不需要手动复制 database_id。
 
@@ -87,9 +89,22 @@ npm run d1:ensure       # 不存在则创建，并打印 database_id
 npx wrangler d1 list
 ```
 
+### 常见问题：登录后 `/api/state` 返回 500
+
+能弹出登录框并输入密码，说明 `APP_PASSCODE` 和 `SESSION_SECRET` 已生效；登录成功后 `/api/state` 仍返回 500，通常是 Worker 读不到 D1 数据。按顺序检查：
+
+1. 访问 `https://<你的 Worker 地址>/api/health`：
+   - `{"ok":true,"db":"ok"}`：数据库正常。
+   - `db: "missing_binding"`：Worker 没有名为 `DB` 的 D1 绑定。确认构建环境变量 `DATABASE_ID` 指向正确的 `cashsim-db`，然后重新部署。
+   - `db: "missing_table"`：D1 里暂时没有 `app_state` 表。首次打开应用会自动建表；如果登录后仍报错，按第 2 步手动建表。
+2. 在远程 D1 建表（任选其一）：
+   - CLI：`npx wrangler login && npm run db:migrate:remote`
+   - Dashboard：D1 → `cashsim-db` → Console，粘贴 `migrations/0001_init.sql` 里的 SQL 执行。
+3. 确认 Worker 的 `DB` 绑定和建表用的是同一个 `cashsim-db`。
+
 ### GitHub 自动部署（Cloudflare Workers Builds）
 
-1. 先按上面的步骤创建 D1、执行远程建表，并拿到 `database_id`。
+1. 先按上面的步骤创建 D1 并拿到 `database_id`（建表可跳过，Worker 首次访问会自动建表）。
 2. Cloudflare Dashboard → Workers & Pages → Create → Connect to Git，选择 `jcvv0n/cashsim`。
 3. 构建配置：
    - Build command: `npm run build && node scripts/render-wrangler.mjs --require`

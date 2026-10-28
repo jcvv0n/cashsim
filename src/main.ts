@@ -213,9 +213,19 @@ async function boot(): Promise<void> {
 
     syncMode = "local";
     logoutButton.hidden = true;
+    hideBootScreen();
+
+    if (!authScreen.hidden) {
+      // 登录成功但接口出错：在登录页显示原因，避免看起来毫无反应
+      loginError.textContent = `登录成功，但加载数据失败：${
+        error instanceof Error ? error.message : "未知错误"
+      }`;
+      setSyncStatus("error");
+      return;
+    }
+
     setSyncStatus("local");
     state = loadState();
-    hideBootScreen();
     renderAll();
   }
 }

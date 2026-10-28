@@ -1,7 +1,7 @@
 import type { AppState } from "../src/engine/types";
 
 interface Env {
-  DB: D1Database;
+  DB?: D1Database;
   ASSETS: Fetcher;
   APP_PASSCODE?: string;
   SESSION_SECRET?: string;
@@ -13,6 +13,17 @@ const STATE_ID = "default";
 const DEFAULT_COOKIE_NAME = "cashsim_session";
 const DEFAULT_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const MAX_BODY_BYTES = 1_000_000;
+
+// 与 migrations/0001_init.sql 保持一致；首次访问时自动建表
+const INIT_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS app_state (
+  id TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  rev INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+)`;
+
+// 每个 Worker isolate 最多执行一次建表；失败后清空以便下次重试
+let schemaReady: Promise<void> | undefined;
 
 function cookieName(env: Env): string {
   return env.COOKIE_NAME || DEFAULT_COOKIE_NAME;
@@ -54,7 +65,7 @@ async function handleApi(
 ): Promise<Response> {
   try {
     if (url.pathname === "/api/health") {
-      return json({ ok: true });
+      return await handleHealth(env);
     }
 
     if (!env.APP_PASSCODE || !env.SESSION_SECRET) {
@@ -100,9 +111,80 @@ async function handleApi(
     if (error instanceof HttpError) {
       return json({ error: error.message }, error.status);
     }
+
     console.error("API error", error);
+
+    if (isMissingTableError(error)) {
+      return json(
+        {
+          error:
+            "数据库未初始化，自动建表失败。请检查 D1 绑定，或手动执行 migrations/0001_init.sql",
+        },
+        500,
+      );
+    }
+
     return json({ error: "服务器错误" }, 500);
   }
+}
+
+async function handleHealth(env: Env): Promise<Response> {
+  if (!env.DB) {
+    return json(
+      {
+        ok: false,
+        db: "missing_binding",
+        error: "服务端未配置 D1 数据库绑定（变量名 DB）",
+      },
+      500,
+    );
+  }
+
+  try {
+    await env.DB.prepare("SELECT 1 FROM app_state LIMIT 1").first();
+    return json({ ok: true, db: "ok" });
+  } catch (error) {
+    console.error("Health check DB error", error);
+
+    if (isMissingTableError(error)) {
+      return json(
+        {
+          ok: false,
+          db: "missing_table",
+          error:
+            "数据库未初始化：缺少 app_state 表。首次打开应用会自动建表；若仍失败请手动执行 migrations/0001_init.sql",
+        },
+        500,
+      );
+    }
+
+    return json({ ok: false, db: "error", error: "数据库访问失败" }, 500);
+  }
+}
+
+function isMissingTableError(error: unknown): boolean {
+  return error instanceof Error && /no such table/i.test(error.message);
+}
+
+function requireDb(env: Env): D1Database {
+  if (!env.DB) {
+    throw new HttpError(500, "服务端未配置 D1 数据库绑定（变量名 DB）");
+  }
+  return env.DB;
+}
+
+function ensureSchema(env: Env): Promise<void> {
+  if (!schemaReady) {
+    schemaReady = requireDb(env)
+      .prepare(INIT_SCHEMA_SQL)
+      .run()
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        schemaReady = undefined;
+        throw error;
+      });
+  }
+  return schemaReady;
 }
 
 async function handleLogin(
@@ -143,17 +225,19 @@ async function handlePutState(
     throw new HttpError(400, "数据格式不正确");
   }
 
+  await ensureSchema(env);
+  const db = requireDb(env);
   const now = new Date().toISOString();
-  const existing = await env.DB.prepare(
-    "SELECT rev FROM app_state WHERE id = ?",
-  )
+  const existing = await db
+    .prepare("SELECT rev FROM app_state WHERE id = ?")
     .bind(STATE_ID)
     .first<{ rev: number }>();
 
   if (!existing) {
-    await env.DB.prepare(
-      "INSERT INTO app_state (id, data, rev, updated_at) VALUES (?, ?, 1, ?)",
-    )
+    await db
+      .prepare(
+        "INSERT INTO app_state (id, data, rev, updated_at) VALUES (?, ?, 1, ?)",
+      )
       .bind(STATE_ID, JSON.stringify(body.data), now)
       .run();
 
@@ -165,9 +249,10 @@ async function handlePutState(
   }
 
   const nextRev = existing.rev + 1;
-  const result = await env.DB.prepare(
-    "UPDATE app_state SET data = ?, rev = ?, updated_at = ? WHERE id = ? AND rev = ?",
-  )
+  const result = await db
+    .prepare(
+      "UPDATE app_state SET data = ?, rev = ?, updated_at = ? WHERE id = ? AND rev = ?",
+    )
     .bind(JSON.stringify(body.data), nextRev, now, STATE_ID, body.rev)
     .run();
 
@@ -188,9 +273,10 @@ async function readState(env: Env): Promise<{
   rev: number;
   updatedAt: string | null;
 }> {
-  const row = await env.DB.prepare(
-    "SELECT data, rev, updated_at FROM app_state WHERE id = ?",
-  )
+  await ensureSchema(env);
+
+  const row = await requireDb(env)
+    .prepare("SELECT data, rev, updated_at FROM app_state WHERE id = ?")
     .bind(STATE_ID)
     .first<{ data: string; rev: number; updated_at: string }>();
 
