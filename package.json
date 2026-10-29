@@ -19,8 +19,8 @@
     "deploy": "npm run build && node scripts/with-d1.mjs -- wrangler deploy --config wrangler.generated.jsonc",
     "deploy:dry": "npm run build && npm run cf:config && wrangler deploy --config wrangler.generated.jsonc --dry-run --outdir=.wrangler/dry-run",
     "secrets:push": "npm run cf:config && node scripts/push-secrets.mjs",
-    "db:migrate:local": "npm run cf:config && wrangler d1 execute cashsim-db --local --config wrangler.generated.jsonc --file=./migrations/0001_init.sql",
-    "db:migrate:remote": "node scripts/with-d1.mjs -- wrangler d1 execute cashsim-db --remote --config wrangler.generated.jsonc --file=./migrations/0001_init.sql"
+    "db:migrate:local": "npm run cf:config && wrangler d1 execute cashsim-db --local --config wrangler.generated.jsonc --file=./migrations/0001_init.sql && wrangler d1 execute cashsim-db --local --config wrangler.generated.jsonc --file=./migrations/0002_workspaces.sql",
+    "db:migrate:remote": "node scripts/with-d1.mjs -- wrangler d1 execute cashsim-db --remote --config wrangler.generated.jsonc --file=./migrations/0001_init.sql && node scripts/with-d1.mjs -- wrangler d1 execute cashsim-db --remote --config wrangler.generated.jsonc --file=./migrations/0002_workspaces.sql"
   },
   "dependencies": {
     "echarts": "^6.1.0"

@@ -9,18 +9,54 @@ interface Env {
   SESSION_TTL_SECONDS?: string;
 }
 
-const STATE_ID = "default";
+const LEGACY_STATE_ID = "default";
+const LEGACY_WORKSPACE_ID = "default";
+const LEGACY_WORKSPACE_NAME = "默认沙盘";
 const DEFAULT_COOKIE_NAME = "cashsim_session";
 const DEFAULT_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const MAX_BODY_BYTES = 1_000_000;
+const MAX_NAME_LENGTH = 60;
 
-// 与 migrations/0001_init.sql 保持一致；首次访问时自动建表
-const INIT_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS app_state (
+// 与 migrations/*.sql 保持一致；首次访问时自动建表
+const INIT_LEGACY_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS app_state (
   id TEXT PRIMARY KEY,
   data TEXT NOT NULL,
   rev INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 )`;
+
+const INIT_WORKSPACES_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  data TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`;
+
+const INIT_WORKSPACES_INDEX_SQL =
+  "CREATE INDEX IF NOT EXISTS idx_workspaces_updated_at ON workspaces (updated_at DESC)";
+
+interface WorkspaceRow {
+  id: string;
+  name: string;
+  data: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WorkspaceSummary {
+  id: string;
+  name: string;
+  version: number;
+  updatedAt: string;
+  createdAt: string;
+}
+
+interface WorkspacePayload extends WorkspaceSummary {
+  data: AppState;
+}
 
 // 每个 Worker isolate 最多执行一次建表；失败后清空以便下次重试
 let schemaReady: Promise<void> | undefined;
@@ -83,7 +119,10 @@ async function handleApi(
       return handleLogout(request, env);
     }
 
-    if (url.pathname === "/api/state") {
+    if (
+      url.pathname === "/api/workspaces" ||
+      url.pathname.startsWith("/api/workspaces/")
+    ) {
       if (
         !(await isAuthenticated(
           request,
@@ -94,16 +133,7 @@ async function handleApi(
         return json({ error: "未登录" }, 401);
       }
 
-      if (request.method === "GET") {
-        return json(await readState(env));
-      }
-      if (request.method === "PUT") {
-        return await handlePutState(request, env);
-      }
-
-      return json({ error: "Method not allowed" }, 405, {
-        Allow: "GET, PUT",
-      });
+      return await handleWorkspaces(request, env, url);
     }
 
     return json({ error: "Not found" }, 404);
@@ -118,13 +148,52 @@ async function handleApi(
       return json(
         {
           error:
-            "数据库未初始化，自动建表失败。请检查 D1 绑定，或手动执行 migrations/0001_init.sql",
+            "数据库未初始化，自动建表失败。请检查 D1 绑定，或手动执行 migrations 下的 SQL",
         },
         500,
       );
     }
 
     return json({ error: "服务器错误" }, 500);
+  }
+}
+
+async function handleWorkspaces(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  if (url.pathname === "/api/workspaces") {
+    if (request.method !== "GET") {
+      return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
+    }
+    return json({ workspaces: await listWorkspaces(env) });
+  }
+
+  let id: string;
+  try {
+    id = decodeURIComponent(url.pathname.slice("/api/workspaces/".length));
+  } catch {
+    return json({ error: "沙盘 ID 不正确" }, 400);
+  }
+
+  if (!isValidWorkspaceId(id)) {
+    return json({ error: "沙盘 ID 不正确" }, 400);
+  }
+
+  switch (request.method) {
+    case "GET":
+      return await handleGetWorkspace(env, id);
+    case "PUT":
+      return await handlePutWorkspace(request, env, id);
+    case "PATCH":
+      return await handleRenameWorkspace(request, env, id);
+    case "DELETE":
+      return await handleDeleteWorkspace(env, id);
+    default:
+      return json({ error: "Method not allowed" }, 405, {
+        Allow: "GET, PUT, PATCH, DELETE",
+      });
   }
 }
 
@@ -141,7 +210,7 @@ async function handleHealth(env: Env): Promise<Response> {
   }
 
   try {
-    await env.DB.prepare("SELECT 1 FROM app_state LIMIT 1").first();
+    await env.DB.prepare("SELECT 1 FROM workspaces LIMIT 1").first();
     return json({ ok: true, db: "ok" });
   } catch (error) {
     console.error("Health check DB error", error);
@@ -152,7 +221,7 @@ async function handleHealth(env: Env): Promise<Response> {
           ok: false,
           db: "missing_table",
           error:
-            "数据库未初始化：缺少 app_state 表。首次打开应用会自动建表；若仍失败请手动执行 migrations/0001_init.sql",
+            "数据库未初始化：缺少 workspaces 表。首次打开应用会自动建表；若仍失败请手动执行 migrations 下的 SQL",
         },
         500,
       );
@@ -175,16 +244,278 @@ function requireDb(env: Env): D1Database {
 
 function ensureSchema(env: Env): Promise<void> {
   if (!schemaReady) {
-    schemaReady = requireDb(env)
-      .prepare(INIT_SCHEMA_SQL)
-      .run()
-      .then(() => undefined)
-      .catch((error: unknown) => {
-        schemaReady = undefined;
-        throw error;
-      });
+    const db = requireDb(env);
+    schemaReady = (async () => {
+      await db.prepare(INIT_LEGACY_SCHEMA_SQL).run();
+      await db.prepare(INIT_WORKSPACES_SCHEMA_SQL).run();
+      await db.prepare(INIT_WORKSPACES_INDEX_SQL).run();
+      await migrateLegacyState(db);
+    })().catch((error: unknown) => {
+      schemaReady = undefined;
+      throw error;
+    });
   }
   return schemaReady;
+}
+
+/** 旧版只有一个 app_state 行；首次升级时把它迁成“默认沙盘”。 */
+async function migrateLegacyState(db: D1Database): Promise<void> {
+  const count = await db
+    .prepare("SELECT COUNT(*) AS n FROM workspaces")
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) > 0) return;
+
+  const legacy = await db
+    .prepare("SELECT data, updated_at FROM app_state WHERE id = ?")
+    .bind(LEGACY_STATE_ID)
+    .first<{ data: string; updated_at: string }>();
+  if (!legacy) return;
+
+  const updatedAt = legacy.updated_at || new Date().toISOString();
+  const parsed = Date.parse(updatedAt);
+  const version =
+    Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
+
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO workspaces
+        (id, name, data, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      LEGACY_WORKSPACE_ID,
+      LEGACY_WORKSPACE_NAME,
+      legacy.data,
+      version,
+      updatedAt,
+      updatedAt,
+    )
+    .run();
+
+  // 迁移完成后移除旧行，避免删除全部沙盘后旧数据又被迁移回来
+  await db
+    .prepare("DELETE FROM app_state WHERE id = ?")
+    .bind(LEGACY_STATE_ID)
+    .run();
+}
+
+async function listWorkspaces(env: Env): Promise<WorkspaceSummary[]> {
+  await ensureSchema(env);
+  const { results } = await requireDb(env)
+    .prepare(
+      `SELECT id, name, version, created_at, updated_at
+       FROM workspaces
+       ORDER BY updated_at DESC, name ASC`,
+    )
+    .all<Omit<WorkspaceRow, "data">>();
+
+  return results.map(summaryOf);
+}
+
+async function handleGetWorkspace(env: Env, id: string): Promise<Response> {
+  await ensureSchema(env);
+  const row = await getWorkspaceRow(requireDb(env), id);
+  if (!row) return json({ error: "沙盘不存在" }, 404);
+  return json({ workspace: payloadOf(row) });
+}
+
+async function handlePutWorkspace(
+  request: Request,
+  env: Env,
+  id: string,
+): Promise<Response> {
+  const body = await readJsonBody<{
+    name?: unknown;
+    data?: unknown;
+    version?: unknown;
+  }>(request);
+
+  if (!isAppState(body.data)) {
+    throw new HttpError(400, "数据结构不正确");
+  }
+
+  if (
+    typeof body.version !== "number" ||
+    !Number.isSafeInteger(body.version) ||
+    body.version <= 0
+  ) {
+    throw new HttpError(400, "版本号必须是毫秒时间戳");
+  }
+
+  const name =
+    typeof body.name === "string"
+      ? normalizeName(body.name)
+      : LEGACY_WORKSPACE_NAME;
+  if (!name) {
+    throw new HttpError(400, `沙盘名称需为 1-${MAX_NAME_LENGTH} 个字符`);
+  }
+
+  await ensureSchema(env);
+  const db = requireDb(env);
+  const now = new Date().toISOString();
+  const dataJson = JSON.stringify(body.data);
+  const existing = await getWorkspaceRow(db, id);
+
+  if (!existing) {
+    const result = await db
+      .prepare(
+        `INSERT OR IGNORE INTO workspaces
+          (id, name, data, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(id, name, dataJson, body.version, now, now)
+      .run();
+
+    if (result.meta.changes > 0) {
+      return json({
+        workspace: {
+          id,
+          name,
+          version: body.version,
+          updatedAt: now,
+          createdAt: now,
+        } satisfies WorkspaceSummary,
+      });
+    }
+
+    // 并发创建：退回到版本比较
+    const current = await getWorkspaceRow(db, id);
+    if (!current) throw new HttpError(500, "保存失败");
+    return await compareAndUpdate(db, current, dataJson, body.version);
+  }
+
+  return await compareAndUpdate(db, existing, dataJson, body.version);
+}
+
+/**
+ * 只有版本号更大的写入才会生效。版本号相同视为同一次保存（幂等），
+ * 否则返回 409 和服务器上的最新数据，让客户端采用更大的版本。
+ */
+async function compareAndUpdate(
+  db: D1Database,
+  existing: WorkspaceRow,
+  dataJson: string,
+  version: number,
+): Promise<Response> {
+  if (version <= existing.version) {
+    if (version === existing.version && existing.data === dataJson) {
+      return json({ workspace: summaryOf(existing) });
+    }
+    return conflictResponse(existing);
+  }
+
+  const now = new Date().toISOString();
+  const result = await db
+    .prepare(
+      `UPDATE workspaces
+       SET data = ?, version = ?, updated_at = ?
+       WHERE id = ? AND version = ?`,
+    )
+    .bind(dataJson, version, now, existing.id, existing.version)
+    .run();
+
+  if (result.meta.changes === 0) {
+    const current = await getWorkspaceRow(db, existing.id);
+    if (!current) throw new HttpError(409, "沙盘已被删除");
+    return conflictResponse(current);
+  }
+
+  return json({
+    workspace: summaryOf({
+      id: existing.id,
+      name: existing.name,
+      version,
+      created_at: existing.created_at,
+      updated_at: now,
+    }),
+  });
+}
+
+async function handleRenameWorkspace(
+  request: Request,
+  env: Env,
+  id: string,
+): Promise<Response> {
+  const body = await readJsonBody<{ name?: unknown }>(request);
+  const name = typeof body.name === "string" ? normalizeName(body.name) : null;
+  if (!name) {
+    throw new HttpError(400, `沙盘名称需为 1-${MAX_NAME_LENGTH} 个字符`);
+  }
+
+  await ensureSchema(env);
+  const db = requireDb(env);
+  const existing = await getWorkspaceRow(db, id);
+  if (!existing) return json({ error: "沙盘不存在" }, 404);
+
+  if (existing.name !== name) {
+    await db
+      .prepare("UPDATE workspaces SET name = ? WHERE id = ?")
+      .bind(name, id)
+      .run();
+  }
+
+  return json({
+    workspace: summaryOf({ ...existing, name }),
+  });
+}
+
+async function handleDeleteWorkspace(env: Env, id: string): Promise<Response> {
+  await ensureSchema(env);
+  await requireDb(env)
+    .prepare("DELETE FROM workspaces WHERE id = ?")
+    .bind(id)
+    .run();
+  return json({ ok: true });
+}
+
+async function getWorkspaceRow(
+  db: D1Database,
+  id: string,
+): Promise<WorkspaceRow | null> {
+  return await db
+    .prepare(
+      `SELECT id, name, data, version, created_at, updated_at
+       FROM workspaces WHERE id = ?`,
+    )
+    .bind(id)
+    .first<WorkspaceRow>();
+}
+
+function summaryOf(row: Omit<WorkspaceRow, "data">): WorkspaceSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    version: row.version,
+    updatedAt: row.updated_at,
+    createdAt: row.created_at,
+  };
+}
+
+function payloadOf(row: WorkspaceRow): WorkspacePayload {
+  return {
+    ...summaryOf(row),
+    data: JSON.parse(row.data) as AppState,
+  };
+}
+
+async function conflictResponse(row: WorkspaceRow): Promise<Response> {
+  return json(
+    {
+      error: "数据版本较旧，已返回服务器上的最新版本",
+      workspace: payloadOf(row),
+    },
+    409,
+  );
+}
+
+function normalizeName(raw: string): string | null {
+  const name = raw.trim();
+  if (!name || name.length > MAX_NAME_LENGTH) return null;
+  return name;
+}
+
+function isValidWorkspaceId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id);
 }
 
 async function handleLogin(
@@ -215,82 +546,6 @@ function handleLogout(request: Request, env: Env): Response {
   });
 }
 
-async function handlePutState(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const body = await readJsonBody<{ data?: unknown; rev?: unknown }>(request);
-
-  if (!isAppState(body.data) || typeof body.rev !== "number") {
-    throw new HttpError(400, "数据格式不正确");
-  }
-
-  await ensureSchema(env);
-  const db = requireDb(env);
-  const now = new Date().toISOString();
-  const existing = await db
-    .prepare("SELECT rev FROM app_state WHERE id = ?")
-    .bind(STATE_ID)
-    .first<{ rev: number }>();
-
-  if (!existing) {
-    await db
-      .prepare(
-        "INSERT INTO app_state (id, data, rev, updated_at) VALUES (?, ?, 1, ?)",
-      )
-      .bind(STATE_ID, JSON.stringify(body.data), now)
-      .run();
-
-    return json({ rev: 1, updatedAt: now });
-  }
-
-  if (existing.rev !== body.rev) {
-    return conflict(env);
-  }
-
-  const nextRev = existing.rev + 1;
-  const result = await db
-    .prepare(
-      "UPDATE app_state SET data = ?, rev = ?, updated_at = ? WHERE id = ? AND rev = ?",
-    )
-    .bind(JSON.stringify(body.data), nextRev, now, STATE_ID, body.rev)
-    .run();
-
-  if (result.meta.changes === 0) {
-    return conflict(env);
-  }
-
-  return json({ rev: nextRev, updatedAt: now });
-}
-
-async function conflict(env: Env): Promise<Response> {
-  const current = await readState(env);
-  return json({ error: "数据已在别处更新", ...current }, 409);
-}
-
-async function readState(env: Env): Promise<{
-  data: unknown;
-  rev: number;
-  updatedAt: string | null;
-}> {
-  await ensureSchema(env);
-
-  const row = await requireDb(env)
-    .prepare("SELECT data, rev, updated_at FROM app_state WHERE id = ?")
-    .bind(STATE_ID)
-    .first<{ data: string; rev: number; updated_at: string }>();
-
-  if (!row) {
-    return { data: null, rev: 0, updatedAt: null };
-  }
-
-  return {
-    data: JSON.parse(row.data),
-    rev: row.rev,
-    updatedAt: row.updated_at,
-  };
-}
-
 async function readJsonBody<T>(request: Request): Promise<T> {
   const text = await request.text();
   if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
@@ -309,7 +564,7 @@ function isAppState(value: unknown): value is AppState {
   const candidate = value as Record<string, unknown>;
 
   return (
-    candidate.version === 1 &&
+    (candidate.schemaVersion === 1 || candidate.version === 1) &&
     typeof candidate.settings === "object" &&
     candidate.settings !== null &&
     Array.isArray(candidate.items) &&

@@ -339,6 +339,7 @@ export function recurringListHtml(items: RecurringItem[]): string {
           </div>
           <div class="item-amount ${amountClass}">${amountPrefix}${formatMoney(item.amount)}</div>
           <div class="item-actions">
+            <button type="button" data-action="duplicate" data-kind="${item.type}" data-id="${item.id}" title="填入这条记录的数据，稍作修改后新增">复制新增</button>
             <button type="button" data-action="edit" data-kind="${item.type}" data-id="${item.id}">编辑</button>
             <button type="button" data-action="delete" data-kind="${item.type}" data-id="${item.id}" class="danger">删除</button>
           </div>
@@ -367,6 +368,7 @@ export function billListHtml(bills: CardBill[]): string {
           </div>
           <div class="item-amount amount-neg">-${formatMoney(bill.amount)}</div>
           <div class="item-actions">
+            <button type="button" data-action="duplicate" data-kind="bill" data-id="${bill.id}" title="填入这笔账单的数据，稍作修改后新增">复制新增</button>
             <button type="button" data-action="edit" data-kind="bill" data-id="${bill.id}">编辑</button>
             <button type="button" data-action="delete" data-kind="bill" data-id="${bill.id}" class="danger">删除</button>
           </div>
@@ -399,6 +401,7 @@ export function oneOffListHtml(oneOffs: OneOffItem[]): string {
           </div>
           <div class="item-amount ${amountClass}">${formatMoney(item.amount, { signed: true })}</div>
           <div class="item-actions">
+            <button type="button" data-action="duplicate" data-kind="oneoff" data-id="${item.id}" title="填入这个事件的数据，稍作修改后新增">复制新增</button>
             <button type="button" data-action="edit" data-kind="oneoff" data-id="${item.id}">编辑</button>
             <button type="button" data-action="delete" data-kind="oneoff" data-id="${item.id}" class="danger">删除</button>
           </div>
@@ -409,10 +412,9 @@ export function oneOffListHtml(oneOffs: OneOffItem[]): string {
 }
 
 function formatAxis(value: number): string {
-  const absolute = Math.abs(value);
-  if (absolute >= 10_000) {
-    const wan = value / 10_000;
-    return `${Number.isInteger(wan) ? wan : wan.toFixed(1)}万`;
+  const rounded = Math.round(value);
+  if (rounded !== 0 && rounded % 10_000 === 0) {
+    return `${rounded / 10_000}万`;
   }
-  return String(Math.round(value));
+  return String(rounded);
 }

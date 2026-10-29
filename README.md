@@ -58,9 +58,9 @@ npx wrangler login
 npm run db:migrate:remote
 ```
 
-这一步是可选的：Worker 首次访问 `/api/state` 时会自动执行 `CREATE TABLE IF NOT EXISTS app_state`，忘记建表也能正常使用。提前执行可以避免首次登录多一次建表写入。
+这一步是可选的：Worker 首次读取沙盘数据时会自动建表，并把旧版的 `app_state` 数据迁移成“默认沙盘”。提前执行可以避免首次登录多一次建表写入。
 
-脚本会先执行 `wrangler d1 list --json` 查找 `cashsim-db`，不存在就自动创建，然后把 ID 注入生成配置并执行建表。不需要手动复制 database_id。
+脚本会先执行 `wrangler d1 list --json` 查找 `cashsim-db`，不存在就自动创建，然后把 ID 注入生成配置并执行 `migrations/` 下的 SQL。不需要手动复制 database_id。
 
 ### 3. 注入访问密码和 token 密钥
 
@@ -89,17 +89,17 @@ npm run d1:ensure       # 不存在则创建，并打印 database_id
 npx wrangler d1 list
 ```
 
-### 常见问题：登录后 `/api/state` 返回 500
+### 常见问题：登录后沙盘列表返回 500
 
-能弹出登录框并输入密码，说明 `APP_PASSCODE` 和 `SESSION_SECRET` 已生效；登录成功后 `/api/state` 仍返回 500，通常是 Worker 读不到 D1 数据。按顺序检查：
+能弹出登录框并输入密码，说明 `APP_PASSCODE` 和 `SESSION_SECRET` 已生效；登录成功后 `/api/workspaces` 仍返回 500，通常是 Worker 读不到 D1 数据。按顺序检查：
 
 1. 访问 `https://<你的 Worker 地址>/api/health`：
    - `{"ok":true,"db":"ok"}`：数据库正常。
    - `db: "missing_binding"`：Worker 没有名为 `DB` 的 D1 绑定。确认构建环境变量 `DATABASE_ID` 指向正确的 `cashsim-db`，然后重新部署。
-   - `db: "missing_table"`：D1 里暂时没有 `app_state` 表。首次打开应用会自动建表；如果登录后仍报错，按第 2 步手动建表。
+   - `db: "missing_table"`：D1 里暂时没有 `workspaces` 表。首次打开应用会自动建表；如果登录后仍报错，按第 2 步手动建表。
 2. 在远程 D1 建表（任选其一）：
    - CLI：`npx wrangler login && npm run db:migrate:remote`
-   - Dashboard：D1 → `cashsim-db` → Console，粘贴 `migrations/0001_init.sql` 里的 SQL 执行。
+   - Dashboard：D1 → `cashsim-db` → Console，依次执行 `migrations/0001_init.sql` 和 `migrations/0002_workspaces.sql`。
 3. 确认 Worker 的 `DB` 绑定和建表用的是同一个 `cashsim-db`。
 
 ### GitHub 自动部署（Cloudflare Workers Builds）
@@ -139,27 +139,34 @@ npm run secrets:push
 
 ### 安全
 
-- `/api/state` 需要登录后的 HttpOnly 签名 Cookie。
+- `/api/workspaces` 需要登录后的 HttpOnly 签名 Cookie。
 - `APP_PASSCODE` 和 `SESSION_SECRET` 只通过 Cloudflare Secret 注入，不进入代码库。
 - 如果需要更强保护，可以在 Cloudflare Zero Trust 里给 Worker 配 Access。
 
-数据保存在 D1 的 `app_state` 表里，内容是整份 AppState JSON。免费额度对个人使用足够（5GB 存储、每天 5M 行读 / 100k 行写，以 Cloudflare 当前政策为准）。
+每个沙盘是 D1 `workspaces` 表里的一行，`data` 列是整份 AppState JSON。免费额度对个人使用足够（5GB 存储、每天 5M 行读 / 100k 行写，以 Cloudflare 当前政策为准）。
 
 ## 数据与同步
 
-- 云端：D1 单行 JSON，带 `rev` 乐观锁；多标签页同时修改会提示并加载最新版本。
-- 本地：localStorage 作为缓存和离线兜底；API 不可用时自动进入“本地模式”。
-- 首次部署时，如果 D1 为空，会把浏览器里的本地数据（或示例数据）迁移上去。
-- 支持 JSON 导入/导出。
+- **沙盘**：每个沙盘是一份独立的推演数据，可以新建、复制、切换、重命名和删除。界面右侧的“沙盘”按钮里能看到所有沙盘及应用内最后保存时间。
+- **毫秒版本号**：每个沙盘记录带一个毫秒时间戳 `version`。保存时服务端只接受版本号更大的数据；版本号相同时视为同一次保存。冲突时客户端会加载服务端上版本号更大的数据，并在提示中说明。导出的 JSON 顶层 `version` 是沙盘版本号，`data.schemaVersion` 是数据结构版本（目前为 1），二者含义不同。
+- **自动保存**：任何修改都会立即写入 localStorage，并在约 0.4 秒后同步到云端；右上角显示“保存于 …”。
+- **多设备**：刷新页面、切回标签页或每 60 秒轮询时都会对比版本号，版本号更大的数据胜出。其他设备保存了更新版本时会自动加载并提示。
+- **本地兜底**：API 不可用时自动进入“本地模式”，界面显示“本地保存于 …”，数据仍会保留在浏览器里。
+- **旧数据兼容**：旧版的单行 `app_state` 会在首次读取时迁移成“默认沙盘”；旧版 localStorage（`cashsim:v1`）也会迁移成“默认沙盘”。下次自动保存时统一按新的沙盘结构写入。
+- **导入/导出**：导出为带 `format`、`name`、`version` 和 `data` 的 JSON；导入时会新建一个沙盘，不会覆盖现有数据，同时兼容旧版直接导出的 AppState JSON。
 
 ## 交互
 
+- **沙盘列表**：右上角“沙盘”按钮展示所有沙盘、每个沙盘的最后保存时间和当前标记；可直接切换、重命名或删除。
+- **复制新增**：每月收入、固定还款、信用卡账单、一次性事件都支持“复制新增”——弹窗会填入原条目的数据，稍作修改即可保存成新条目。
+- **低频操作**：导入、导出、重置当前沙盘、退出登录收在右上角“⋯”菜单里。
 - 点击月度表格里的金额单元格，弹出该月的明细；汇总项会显示“N 笔”。
 - 点击外部、按 Esc 或点关闭按钮收起明细。
 - 单元格支持键盘操作：Tab 聚焦后按 Enter / 空格打开。
 
 ## 模型口径
 
+- 所有金额按整数元录入和展示；历史数据中的小数会在读取时四舍五入到整数元。
 - 所有金额按月计，不区分还款日、发薪日的先后。
 - 期初现金 = 起始月的**月初余额**。如果手里只有今天的余额，把起始月设为下个月，并先扣掉本月剩余未付账单。
 - 信用卡账单录的是**还款月份**（钱实际离开账户的月份），不是消费月份。这样不用关心每张卡不同的还款日。
@@ -173,15 +180,18 @@ npm run secrets:push
 ```text
 cashsim/
   worker/index.ts          Cloudflare Worker API + 静态资源
-  migrations/0001_init.sql D1 初始化表
+  migrations/0001_init.sql 旧版单行 app_state 表
+  migrations/0002_workspaces.sql 沙盘表
   src/
     api.ts                 前端 API 客户端
     engine/                纯 TS 计算引擎，无 DOM 依赖
-    main.ts                启动、登录、同步、事件
+    main.ts                启动、登录、同步、沙盘切换、事件
     render.ts              KPI、月度表格、ECharts 曲线、侧栏列表
-    dialog.ts              添加/编辑弹窗
+    dialog.ts              添加/编辑弹窗、沙盘命名弹窗
     detail.ts              金额明细弹层
-    state.ts               示例数据、校验、localStorage
+    state.ts               示例数据与校验
+    workspace.ts           沙盘本地缓存、版本号、保存时间格式化
+    month-picker.ts        月份选择器 Web Component
     format.ts              金额与月份格式化
     style.css
   wrangler.template.jsonc  Worker + D1 配置模板

@@ -18,7 +18,7 @@ function makeState(
   } = {},
 ): AppState {
   return {
-    version: 1,
+    schemaVersion: 1,
     settings: {
       startMonth: "2026-01",
       openingCash: 0,

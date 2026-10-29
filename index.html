@@ -18,10 +18,54 @@
         </div>
         <div class="top-actions">
           <span class="sync-status connecting" id="sync-status">连接中…</span>
-          <button class="btn" id="btn-import" type="button">导入</button>
-          <button class="btn" id="btn-export" type="button">导出</button>
-          <button class="btn btn-ghost" id="btn-reset" type="button">重置示例</button>
-          <button class="btn btn-ghost" id="btn-logout" type="button" hidden>退出</button>
+
+          <div class="workspace-menu" id="workspace-menu">
+            <button
+              class="btn workspace-button"
+              id="btn-workspace"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="workspace-popover"
+              title="切换沙盘"
+            >
+              <span class="workspace-button-label">沙盘</span>
+              <strong id="workspace-name">默认沙盘</strong>
+              <span class="workspace-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="workspace-popover" id="workspace-popover" hidden>
+              <div class="workspace-popover-head">
+                <span>我的沙盘</span>
+                <span class="muted">按最后保存排序</span>
+              </div>
+              <div class="workspace-list" id="workspace-list"></div>
+              <div class="workspace-popover-foot">
+                <button class="btn btn-small btn-primary" id="btn-new-workspace" type="button">
+                  + 新建沙盘
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="more-menu" id="more-menu">
+            <button
+              class="btn btn-ghost more-button"
+              id="btn-more"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="more-popover"
+              title="导入、导出、重置等"
+            >
+              ⋯
+            </button>
+            <div class="more-popover" id="more-popover" hidden>
+              <button type="button" id="btn-import">导入数据…</button>
+              <button type="button" id="btn-export">导出当前沙盘</button>
+              <button type="button" id="btn-reset">重置当前沙盘</button>
+              <button type="button" id="btn-logout" class="danger" hidden>退出登录</button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -71,13 +115,13 @@
             </div>
             <form class="settings-grid" id="settings-form">
               <label>起始月
-                <input type="month" id="set-start-month" />
+                <month-picker id="set-start-month" aria-label="起始月"></month-picker>
               </label>
               <label>期初现金（元）
-                <input type="number" step="0.01" min="0" inputmode="decimal" id="set-opening-cash" />
+                <input type="number" step="1" min="0" inputmode="numeric" id="set-opening-cash" />
               </label>
               <label>安全线（元）
-                <input type="number" step="0.01" min="0" inputmode="decimal" id="set-safety-floor" />
+                <input type="number" step="1" min="0" inputmode="numeric" id="set-safety-floor" />
               </label>
               <label>推演月数
                 <select id="set-horizon">
@@ -88,10 +132,10 @@
                 </select>
               </label>
               <label>每月生活费（元）
-                <input type="number" step="0.01" min="0" inputmode="decimal" id="set-budget" />
+                <input type="number" step="1" min="0" inputmode="numeric" id="set-budget" />
               </label>
               <label>生活费起始月
-                <input type="month" id="set-budget-start" />
+                <month-picker id="set-budget-start" aria-label="生活费起始月"></month-picker>
               </label>
             </form>
             <p class="hint">生活费只用于没有实际账单的月份；录入账单后自动停用，避免重复计算。</p>
@@ -172,6 +216,8 @@
     </div>
 
     <dialog id="edit-dialog" class="edit-dialog"></dialog>
+    <dialog id="name-dialog" class="edit-dialog"></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <input type="file" id="file-input" accept="application/json" hidden />
     <script type="module" src="/src/main.ts"></script>
   </body>

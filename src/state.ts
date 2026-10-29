@@ -7,20 +7,7 @@ import type {
 } from "./engine/types";
 import { addMonths, currentMonth, isMonth } from "./engine/months";
 import { normalizeSettings } from "./engine/project";
-
-const STORAGE_KEY = "cashsim:v1";
-const LEGACY_STORAGE_KEYS = ["cash-runway:v1"];
-
-function readStoredState(): string | null {
-  const current = localStorage.getItem(STORAGE_KEY);
-  if (current) return current;
-
-  for (const key of LEGACY_STORAGE_KEYS) {
-    const legacy = localStorage.getItem(key);
-    if (legacy) return legacy;
-  }
-  return null;
-}
+import { centsToYuan } from "./format";
 
 export function uid(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -34,7 +21,7 @@ export function sampleState(): AppState {
   const next = addMonths(start, 1);
 
   return {
-    version: 1,
+    schemaVersion: 1,
     settings: {
       startMonth: start,
       openingCash: 6_000_000,
@@ -94,46 +81,34 @@ export function sampleState(): AppState {
   };
 }
 
-export function loadState(): AppState {
-  try {
-    const raw = readStoredState();
-    if (!raw) return sampleState();
-
-    const parsed: unknown = JSON.parse(raw);
-    if (!isAppState(parsed)) return sampleState();
-
-    const normalized = normalizeState(parsed);
-    saveState(normalized);
-    return normalized;
-  } catch {
-    return sampleState();
-  }
-}
-
-export function saveState(state: AppState): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // localStorage may be unavailable (private mode, quota). The app still works in memory.
-  }
-}
-
-export function clearLocalState(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-    for (const key of LEGACY_STORAGE_KEYS) {
-      localStorage.removeItem(key);
-    }
-  } catch {
-    // ignore
-  }
+/** 统一按整数元保存：内部仍以“分”为单位，值总是 100 的倍数。 */
+function roundToWholeYuan(cents: number): number {
+  return centsToYuan(cents) * 100;
 }
 
 export function normalizeState(state: AppState): AppState {
+  const settings = normalizeSettings(state.settings);
+
   return {
-    ...state,
-    version: 1,
-    settings: normalizeSettings(state.settings),
+    schemaVersion: 1,
+    settings: {
+      ...settings,
+      openingCash: roundToWholeYuan(settings.openingCash),
+      safetyFloor: roundToWholeYuan(settings.safetyFloor),
+      monthlyBudget: roundToWholeYuan(settings.monthlyBudget),
+    },
+    items: state.items.map((item) => ({
+      ...item,
+      amount: roundToWholeYuan(item.amount),
+    })),
+    bills: state.bills.map((bill) => ({
+      ...bill,
+      amount: roundToWholeYuan(bill.amount),
+    })),
+    oneOffs: state.oneOffs.map((item) => ({
+      ...item,
+      amount: roundToWholeYuan(item.amount),
+    })),
   };
 }
 
@@ -195,7 +170,10 @@ function isOneOffItem(value: unknown): value is OneOffItem {
 
 export function isAppState(value: unknown): value is AppState {
   if (!isObject(value)) return false;
+  // 兼容旧版把数据结构版本写成 version: 1 的数据
+  const schemaOk = value.schemaVersion === 1 || value.version === 1;
   return (
+    schemaOk &&
     isSettings(value.settings) &&
     Array.isArray(value.items) &&
     value.items.every(isRecurringItem) &&

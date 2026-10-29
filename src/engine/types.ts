@@ -39,7 +39,8 @@ export interface OneOffItem {
 }
 
 export interface AppState {
-  version: 1;
+  /** 数据结构版本；沙盘数据的毫秒时间戳版本号存放在 WorkspaceRecord.version */
+  schemaVersion: 1;
   settings: Settings;
   items: RecurringItem[];
   bills: CardBill[];
