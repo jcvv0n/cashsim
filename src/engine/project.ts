@@ -21,6 +21,11 @@ export function isActive(item: RecurringItem, month: Month): boolean {
   return month >= item.startMonth && (!end || month <= end);
 }
 
+/** 未显式设置 enabled 的旧数据按启用处理。 */
+export function isEnabled(item: { enabled?: boolean }): boolean {
+  return item.enabled !== false;
+}
+
 export function statusOf(balance: number, safetyFloor: number): RowStatus {
   if (balance < 0) return "danger";
   if (balance < safetyFloor) return "warning";
@@ -36,16 +41,27 @@ export function project(state: AppState): Projection {
 
   for (const month of monthRange(settings.startMonth, settings.horizonMonths)) {
     const incomeItems = state.items.filter(
-      (item) => item.type === "income" && isActive(item, month),
+      (item) =>
+        item.type === "income" && isEnabled(item) && isActive(item, month),
     );
     const income = incomeItems.reduce((sum, item) => sum + item.amount, 0);
 
+    const monthBills = state.bills.filter(
+      (bill) => bill.month === month && isEnabled(bill),
+    );
+    // 账单金额已包含这些分期时，固定还款里不再重复计算
+    const includedFixedIds = new Set(
+      monthBills.flatMap((bill) => bill.includedFixedIds ?? []),
+    );
     const fixedItems = state.items.filter(
-      (item) => item.type === "fixed" && isActive(item, month),
+      (item) =>
+        item.type === "fixed" &&
+        isEnabled(item) &&
+        isActive(item, month) &&
+        !includedFixedIds.has(item.id),
     );
     const fixed = fixedItems.reduce((sum, item) => sum + item.amount, 0);
 
-    const monthBills = state.bills.filter((bill) => bill.month === month);
     const hasActualBills = monthBills.length > 0;
     const living = hasActualBills
       ? monthBills.reduce((sum, bill) => sum + bill.amount, 0)

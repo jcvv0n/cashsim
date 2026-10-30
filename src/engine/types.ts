@@ -20,6 +20,7 @@ export interface RecurringItem {
   startMonth: Month;
   endMonth?: Month; // 含本月
   remainingMonths?: number; // 优先于 endMonth
+  enabled?: boolean; // 缺省视为启用；禁用后不参与计算
 }
 
 export interface CardBill {
@@ -28,6 +29,9 @@ export interface CardBill {
   cardName: string;
   amount: Cents;
   note?: string;
+  enabled?: boolean; // 缺省视为启用；禁用后不参与计算
+  /** 已包含在本账单金额里的固定还款（分期）id，这些分期在该月不再重复计入 */
+  includedFixedIds?: string[];
 }
 
 export interface OneOffItem {

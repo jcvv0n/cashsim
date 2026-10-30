@@ -37,6 +37,7 @@ export function sampleState(): AppState {
         amount: 2_500_000,
         type: "income",
         startMonth: start,
+        enabled: true,
       },
       {
         id: uid(),
@@ -45,6 +46,7 @@ export function sampleState(): AppState {
         type: "fixed",
         startMonth: start,
         remainingMonths: 216,
+        enabled: true,
       },
       {
         id: uid(),
@@ -53,6 +55,7 @@ export function sampleState(): AppState {
         type: "fixed",
         startMonth: start,
         remainingMonths: 8,
+        enabled: true,
       },
     ],
     bills: [
@@ -61,12 +64,14 @@ export function sampleState(): AppState {
         month: start,
         cardName: "招行信用卡",
         amount: 900_000,
+        enabled: true,
       },
       {
         id: uid(),
         month: start,
         cardName: "中信信用卡",
         amount: 600_000,
+        enabled: true,
       },
     ],
     oneOffs: [
@@ -88,6 +93,9 @@ function roundToWholeYuan(cents: number): number {
 
 export function normalizeState(state: AppState): AppState {
   const settings = normalizeSettings(state.settings);
+  const fixedIds = new Set(
+    state.items.filter((item) => item.type === "fixed").map((item) => item.id),
+  );
 
   return {
     schemaVersion: 1,
@@ -99,12 +107,20 @@ export function normalizeState(state: AppState): AppState {
     },
     items: state.items.map((item) => ({
       ...item,
+      enabled: item.enabled !== false,
       amount: roundToWholeYuan(item.amount),
     })),
-    bills: state.bills.map((bill) => ({
-      ...bill,
-      amount: roundToWholeYuan(bill.amount),
-    })),
+    bills: state.bills.map((bill) => {
+      const includedFixedIds = (bill.includedFixedIds ?? []).filter(
+        (id, index, list) => fixedIds.has(id) && list.indexOf(id) === index,
+      );
+      return {
+        ...bill,
+        enabled: bill.enabled !== false,
+        amount: roundToWholeYuan(bill.amount),
+        ...(includedFixedIds.length > 0 ? { includedFixedIds } : {}),
+      };
+    }),
     oneOffs: state.oneOffs.map((item) => ({
       ...item,
       amount: roundToWholeYuan(item.amount),
@@ -142,7 +158,8 @@ function isRecurringItem(value: unknown): value is RecurringItem {
     isMonth(value.startMonth) &&
     (value.endMonth === undefined || isMonth(value.endMonth)) &&
     (value.remainingMonths === undefined ||
-      (isFiniteNumber(value.remainingMonths) && value.remainingMonths > 0))
+      (isFiniteNumber(value.remainingMonths) && value.remainingMonths > 0)) &&
+    (value.enabled === undefined || typeof value.enabled === "boolean")
   );
 }
 
@@ -153,7 +170,11 @@ function isCardBill(value: unknown): value is CardBill {
     isMonth(value.month) &&
     typeof value.cardName === "string" &&
     isFiniteNumber(value.amount) &&
-    (value.note === undefined || typeof value.note === "string")
+    (value.note === undefined || typeof value.note === "string") &&
+    (value.enabled === undefined || typeof value.enabled === "boolean") &&
+    (value.includedFixedIds === undefined ||
+      (Array.isArray(value.includedFixedIds) &&
+        value.includedFixedIds.every((id) => typeof id === "string")))
   );
 }
 

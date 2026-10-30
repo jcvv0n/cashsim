@@ -184,6 +184,108 @@ describe("project", () => {
     expect(rows[1].balance).toBe(60_000);
   });
 
+  it("does not double count installments already included in a card bill", () => {
+    const state = makeState({
+      settings: { monthlyBudget: 0, budgetStartMonth: "2026-04" },
+      items: [
+        {
+          id: "f1",
+          name: "手机分期",
+          amount: 10_000,
+          type: "fixed",
+          startMonth: "2026-01",
+          remainingMonths: 3,
+        },
+        {
+          id: "f2",
+          name: "房贷",
+          amount: 50_000,
+          type: "fixed",
+          startMonth: "2026-01",
+        },
+      ],
+      bills: [
+        {
+          id: "b1",
+          month: "2026-01",
+          cardName: "招行",
+          amount: 40_000,
+          includedFixedIds: ["f1"],
+        },
+      ],
+    });
+
+    const { rows } = project(state);
+    expect(rows[0].fixed).toBe(50_000);
+    expect(rows[0].fixedCount).toBe(1);
+    expect(rows[0].living).toBe(40_000);
+    expect(rows[0].billCount).toBe(1);
+    // 没有账单的月份仍然正常计入分期
+    expect(rows[1].fixed).toBe(60_000);
+  });
+
+  it("keeps a linked installment when its bill is disabled", () => {
+    const state = makeState({
+      settings: { monthlyBudget: 0, budgetStartMonth: "2026-04" },
+      items: [
+        {
+          id: "f1",
+          name: "手机分期",
+          amount: 10_000,
+          type: "fixed",
+          startMonth: "2026-01",
+        },
+      ],
+      bills: [
+        {
+          id: "b1",
+          month: "2026-01",
+          cardName: "招行",
+          amount: 40_000,
+          enabled: false,
+          includedFixedIds: ["f1"],
+        },
+      ],
+    });
+
+    const { rows } = project(state);
+    expect(rows[0].fixed).toBe(10_000);
+    expect(rows[0].fixedCount).toBe(1);
+    expect(rows[0].living).toBe(0);
+    expect(rows[0].billCount).toBe(0);
+  });
+
+  it("skips disabled income and fixed items", () => {
+    const state = makeState({
+      settings: { monthlyBudget: 0, budgetStartMonth: "2026-04" },
+      items: [
+        {
+          id: "i1",
+          name: "工资",
+          amount: 200_000,
+          type: "income",
+          startMonth: "2026-01",
+          enabled: false,
+        },
+        {
+          id: "f1",
+          name: "房贷",
+          amount: 80_000,
+          type: "fixed",
+          startMonth: "2026-01",
+          enabled: false,
+        },
+      ],
+    });
+
+    const { rows } = project(state);
+    expect(rows[0].income).toBe(0);
+    expect(rows[0].incomeCount).toBe(0);
+    expect(rows[0].fixed).toBe(0);
+    expect(rows[0].fixedCount).toBe(0);
+    expect(rows[0].net).toBe(0);
+  });
+
   it("marks warning and danger rows relative to the safety floor", () => {
     const warning = project(
       makeState({

@@ -6,6 +6,7 @@ export function openEditorDialog(
   initial: Record<string, string>,
   onSubmit: (form: FormData) => string | null,
   hint?: string,
+  setup?: (form: HTMLFormElement) => void,
 ): void {
   if (dialog.open) dialog.close();
 
@@ -25,6 +26,8 @@ export function openEditorDialog(
 
   const form = dialog.querySelector("form");
   if (!form) return;
+
+  setup?.(form);
 
   const errorElement = dialog.querySelector<HTMLElement>("[data-error]");
   const closeButton = dialog.querySelector<HTMLButtonElement>("[data-close]");
@@ -150,6 +153,11 @@ function formBody(kind: DialogKind, initial: Record<string, string>): string {
       <label>备注（可选）
         <input name="note" value="${esc(initial.note ?? "")}" placeholder="例如：含分期" />
       </label>
+      <fieldset class="installment-field">
+        <legend>已包含在本账单中的分期（可选）</legend>
+        <p class="field-hint">勾选后，这些固定还款在该月不再重复计入。</p>
+        <div class="installment-list" data-installment-list></div>
+      </fieldset>
     `;
   }
 

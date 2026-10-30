@@ -59,6 +59,24 @@ describe("state compatibility", () => {
     expect(normalized.schemaVersion).toBe(1);
     expect("version" in normalized).toBe(false);
   });
+
+  it("defaults enabled to true and drops stale installment links", () => {
+    const state = sampleState();
+    state.items[0].enabled = false;
+    state.bills[0].enabled = false;
+    state.bills[0].includedFixedIds = [
+      state.items[1].id,
+      "missing",
+      state.items[1].id,
+    ];
+
+    expect(isAppState(state)).toBe(true);
+    const normalized = normalizeState(state);
+    expect(normalized.items[0].enabled).toBe(false);
+    expect(normalized.items[1].enabled).toBe(true);
+    expect(normalized.bills[0].enabled).toBe(false);
+    expect(normalized.bills[0].includedFixedIds).toEqual([state.items[1].id]);
+  });
 });
 
 describe("workspace names", () => {
