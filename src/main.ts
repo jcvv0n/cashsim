@@ -6,9 +6,15 @@ import type {
   RecurringItem,
 } from "./engine/types";
 import { addMonths } from "./engine/months";
-import { effectiveEndMonth, isActive, project } from "./engine/project";
+import {
+  effectiveEndMonth,
+  isActive,
+  isEnabled,
+  project,
+} from "./engine/project";
 import {
   centsToInput,
+  formatMoney,
   formatMonthLong,
   parseYuanToCents,
   todayISO,
@@ -1091,6 +1097,7 @@ function openRecurringDialog(
         startMonth,
         ...(endMonth ? { endMonth } : {}),
         ...(remainingMonths ? { remainingMonths } : {}),
+        enabled: item ? isEnabled(item) : true,
       };
 
       if (editing && item) {
@@ -1136,6 +1143,10 @@ function openBillDialog(
       const cardName = stringField(form, "cardName").trim();
       const amount = parseYuanToCents(stringField(form, "amount"));
       const note = stringField(form, "note").trim();
+      const includedFixedIds = form
+        .getAll("includedFixedIds")
+        .map(String)
+        .filter(Boolean);
 
       if (!month) return "请选择还款月份";
       if (!cardName) return "请填写卡片名称";
@@ -1147,6 +1158,8 @@ function openBillDialog(
         cardName,
         amount,
         ...(note ? { note } : {}),
+        enabled: bill ? isEnabled(bill) : true,
+        ...(includedFixedIds.length > 0 ? { includedFixedIds } : {}),
       };
 
       if (editing && bill) {
@@ -1160,7 +1173,84 @@ function openBillDialog(
       return null;
     },
     copy ? "已填入原账单的数据，保存后会新增一条。" : undefined,
+    (form) =>
+      setupBillInstallmentPicker(
+        form,
+        initial.month,
+        bill?.includedFixedIds ?? [],
+      ),
   );
+}
+
+/** 账单弹窗里的“包含分期”勾选列表，随还款月份变化。 */
+function setupBillInstallmentPicker(
+  form: HTMLFormElement,
+  initialMonth: string,
+  initialSelection: string[],
+): void {
+  const container = form.querySelector<HTMLElement>("[data-installment-list]");
+  if (!container) return;
+
+  let month = initialMonth;
+  let selected = new Set(initialSelection);
+
+  const render = (): void => {
+    if (!month) {
+      container.innerHTML =
+        '<p class="installment-empty">选择还款月份后，可关联该月的固定还款。</p>';
+      return;
+    }
+
+    const candidates = state.items.filter(
+      (item) =>
+        item.type === "fixed" &&
+        isActive(item, month) &&
+        // 已关联但被停用的分期也保留在列表里，避免编辑账单时悄悄丢掉关联
+        (isEnabled(item) || selected.has(item.id)),
+    );
+
+    if (candidates.length === 0) {
+      container.innerHTML =
+        '<p class="installment-empty">该月没有可关联的固定还款。</p>';
+      return;
+    }
+
+    container.innerHTML = candidates
+      .map(
+        (item) => `
+          <label class="installment-option ${isEnabled(item) ? "" : "is-off"}">
+            <input type="checkbox" name="includedFixedIds" value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "checked" : ""} />
+            <span class="installment-main">
+              <span class="installment-name">${escapeHtml(item.name)}</span>
+              <span class="installment-period">${escapeHtml(periodLabel(item))}${isEnabled(item) ? "" : " · 已停用"}</span>
+            </span>
+            <span class="installment-amount">-${formatMoney(item.amount)}/月</span>
+          </label>
+        `,
+      )
+      .join("");
+  };
+
+  render();
+
+  form.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (!target.closest('month-picker[name="month"]')) return;
+
+    selected = new Set(
+      Array.from(
+        form.querySelectorAll<HTMLInputElement>(
+          'input[name="includedFixedIds"]:checked',
+        ),
+      ).map((input) => input.value),
+    );
+    const picker = form.querySelector<MonthPickerElement>(
+      'month-picker[name="month"]',
+    );
+    month = picker?.value ?? "";
+    render();
+  });
 }
 
 function openOneOffDialog(
@@ -1226,7 +1316,7 @@ function renderLists(): void {
   byId("fixed-list").innerHTML = recurringListHtml(
     state.items.filter((item) => item.type === "fixed"),
   );
-  byId("bill-list").innerHTML = billListHtml(state.bills);
+  byId("bill-list").innerHTML = billListHtml(state.bills, state.items);
   byId("oneoff-list").innerHTML = oneOffListHtml(state.oneOffs);
 }
 
@@ -1264,6 +1354,15 @@ function setInputValue(id: string, value: string): void {
   }
 }
 
+/** 该月账单已经包含的固定还款（只有启用的账单才算数）。 */
+function linkedFixedIdsForMonth(month: string): Set<string> {
+  return new Set(
+    state.bills
+      .filter((bill) => bill.month === month && isEnabled(bill))
+      .flatMap((bill) => bill.includedFixedIds ?? []),
+  );
+}
+
 function buildDetail(
   month: string,
   column: DetailColumn,
@@ -1272,9 +1371,15 @@ function buildDetail(
 
   if (column === "income" || column === "fixed") {
     const type = column === "income" ? "income" : "fixed";
-    const items = state.items.filter(
-      (item) => item.type === type && isActive(item, month),
+    const activeItems = state.items.filter(
+      (item) => item.type === type && isEnabled(item) && isActive(item, month),
     );
+
+    const linked = type === "fixed" ? linkedFixedIdsForMonth(month) : null;
+    const items = linked
+      ? activeItems.filter((item) => !linked.has(item.id))
+      : activeItems;
+    const excludedCount = activeItems.length - items.length;
     if (items.length === 0) return null;
 
     const detailItems: DetailItem[] = items.map((item) => ({
@@ -1285,21 +1390,35 @@ function buildDetail(
 
     return {
       title: type === "income" ? "收入明细" : "固定还款明细",
-      subtitle: `${monthLabel} · ${items.length} 笔`,
+      subtitle: `${monthLabel} · ${items.length} 笔${
+        excludedCount > 0 ? ` · 另有 ${excludedCount} 笔已含于账单` : ""
+      }`,
       items: detailItems,
       total: detailItems.reduce((sum, item) => sum + item.amount, 0),
     };
   }
 
   if (column === "bills") {
-    const bills = state.bills.filter((bill) => bill.month === month);
+    const bills = state.bills.filter(
+      (bill) => bill.month === month && isEnabled(bill),
+    );
     if (bills.length === 0) return null;
 
-    const items: DetailItem[] = bills.map((bill) => ({
-      name: bill.cardName,
-      meta: bill.note || "信用卡还款",
-      amount: -bill.amount,
-    }));
+    const items: DetailItem[] = bills.map((bill) => {
+      const metaParts: string[] = [];
+      if (bill.note) metaParts.push(bill.note);
+      const linkedNames = (bill.includedFixedIds ?? [])
+        .map((id) => state.items.find((item) => item.id === id)?.name)
+        .filter((name): name is string => Boolean(name));
+      if (linkedNames.length > 0) {
+        metaParts.push(`含分期：${linkedNames.join("、")}`);
+      }
+      return {
+        name: bill.cardName,
+        meta: metaParts.join(" · ") || "信用卡还款",
+        amount: -bill.amount,
+      };
+    });
 
     return {
       title: "信用卡账单明细",
@@ -1382,6 +1501,16 @@ function bindList(listId: string, kind: ListKind): void {
     const id = button.dataset.id;
     if (!id) return;
 
+    if (button.dataset.action === "move-up") {
+      moveEntry(kind, id, -1);
+      return;
+    }
+
+    if (button.dataset.action === "move-down") {
+      moveEntry(kind, id, 1);
+      return;
+    }
+
     if (button.dataset.action === "duplicate") {
       if (kind === "income" || kind === "fixed") {
         const item = state.items.find((entry) => entry.id === id);
@@ -1415,21 +1544,66 @@ function bindList(listId: string, kind: ListKind): void {
     }
   });
 
-  if (kind === "oneoff") {
-    list.addEventListener("change", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement)) return;
-      if (target.dataset.action !== "toggle") return;
+  list.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.dataset.action !== "toggle") return;
 
-      const item = state.oneOffs.find(
-        (entry) => entry.id === target.dataset.id,
-      );
+    const id = target.dataset.id;
+    if (!id) return;
+
+    if (kind === "income" || kind === "fixed") {
+      const item = state.items.find((entry) => entry.id === id);
       if (!item) return;
-
       item.enabled = target.checked;
-      refresh();
-    });
+    } else if (kind === "bill") {
+      const bill = state.bills.find((entry) => entry.id === id);
+      if (!bill) return;
+      bill.enabled = target.checked;
+    } else {
+      const item = state.oneOffs.find((entry) => entry.id === id);
+      if (!item) return;
+      item.enabled = target.checked;
+    }
+
+    refresh();
+  });
+}
+
+function moveEntry(kind: ListKind, id: string, delta: -1 | 1): void {
+  let moved = false;
+
+  if (kind === "income" || kind === "fixed") {
+    const visible = state.items.filter((item) => item.type === kind);
+    const from = visible.findIndex((item) => item.id === id);
+    const to = from + delta;
+    if (from >= 0 && to >= 0 && to < visible.length) {
+      const a = state.items.indexOf(visible[from]);
+      const b = state.items.indexOf(visible[to]);
+      if (a >= 0 && b >= 0) {
+        [state.items[a], state.items[b]] = [state.items[b], state.items[a]];
+        moved = true;
+      }
+    }
+  } else if (kind === "bill") {
+    moved = moveWithin(state.bills, id, delta);
+  } else {
+    moved = moveWithin(state.oneOffs, id, delta);
   }
+
+  if (moved) refresh();
+}
+
+function moveWithin<T extends { id: string }>(
+  list: T[],
+  id: string,
+  delta: number,
+): boolean {
+  const from = list.findIndex((entry) => entry.id === id);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= list.length) return false;
+  [list[from], list[to]] = [list[to], list[from]];
+  return true;
 }
 
 function deleteEntry(kind: ListKind, id: string): void {
@@ -1437,6 +1611,15 @@ function deleteEntry(kind: ListKind, id: string): void {
     const item = state.items.find((entry) => entry.id === id);
     if (!item || !confirm(`删除「${item.name}」？`)) return;
     state.items = state.items.filter((entry) => entry.id !== id);
+
+    if (kind === "fixed") {
+      for (const bill of state.bills) {
+        if (!bill.includedFixedIds?.includes(id)) continue;
+        const remaining = bill.includedFixedIds.filter((entry) => entry !== id);
+        if (remaining.length > 0) bill.includedFixedIds = remaining;
+        else delete bill.includedFixedIds;
+      }
+    }
   } else if (kind === "bill") {
     const bill = state.bills.find((entry) => entry.id === id);
     if (!bill || !confirm(`删除「${bill.cardName}」这笔账单？`)) return;

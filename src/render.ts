@@ -16,7 +16,7 @@ import type {
   Settings,
 } from "./engine/types";
 import type { DetailColumn } from "./detail";
-import { effectiveEndMonth } from "./engine/project";
+import { effectiveEndMonth, isEnabled } from "./engine/project";
 import { formatMonthLong, formatMonthShort, formatMoney } from "./format";
 import { escapeHtml } from "./html";
 
@@ -258,17 +258,22 @@ export function renderTable(
 
   tbody.innerHTML = projection.rows
     .map((row) => {
+      const year = row.month.slice(0, 4);
+      // 每年一种浅色；推演最多 60 个月，6 种颜色足够
+      const yearClass = ` year-tint-${Number(year) % 6}`;
+
       const statusText =
         row.status === "danger"
           ? "破线"
           : row.status === "warning"
             ? "预警"
             : "正常";
-      const rowClass =
+      // 安全线提示只落在期末现金和状态两列，避免整行着色
+      const statusCellClass =
         row.status === "danger"
-          ? "is-danger"
+          ? " cell-danger"
           : row.status === "warning"
-            ? "is-warning"
+            ? " cell-warning"
             : "";
       const firstFlag =
         row.month === firstWarning
@@ -283,8 +288,8 @@ export function renderTable(
       const oneOffInteractive = row.oneOffCount > 0;
 
       return `
-        <tr class="${rowClass}">
-          <td class="month-cell">${formatMonthLong(row.month)}${firstFlag}</td>
+        <tr>
+          <td class="month-cell${yearClass}">${formatMonthLong(row.month)}${firstFlag}</td>
           <td class="num amount-pos${detailClass(incomeInteractive)}"${detailAttrs(row, "income", incomeInteractive)}>
             ${formatMoney(row.income, { zeroDash: true })}${detailBadge(row.incomeCount)}
           </td>
@@ -303,14 +308,48 @@ export function renderTable(
           <td class="num amount-strong ${row.net < 0 ? "amount-neg" : row.net > 0 ? "amount-pos" : ""}">
             ${formatMoney(row.net, { signed: true, zeroDash: true })}
           </td>
-          <td class="num amount-strong ${row.balance < 0 ? "amount-neg" : ""}">
+          <td class="num amount-strong${row.balance < 0 ? " amount-neg" : ""}${statusCellClass}">
             ${formatMoney(row.balance)}
           </td>
-          <td><span class="status ${row.status}">${statusText}</span></td>
+          <td class="status-cell${statusCellClass}"><span class="status ${row.status}">${statusText}</span></td>
         </tr>
       `;
     })
     .join("");
+}
+
+function moveButtons(
+  kind: string,
+  id: string,
+  index: number,
+  total: number,
+): string {
+  return `
+    <div class="item-move">
+      <button type="button" data-action="move-up" data-kind="${kind}" data-id="${id}" title="上移" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button>
+      <button type="button" data-action="move-down" data-kind="${kind}" data-id="${id}" title="下移" aria-label="下移" ${index === total - 1 ? "disabled" : ""}>↓</button>
+    </div>
+  `;
+}
+
+function itemTitle(
+  id: string,
+  name: string,
+  enabled: boolean,
+  suffix = "",
+): string {
+  return `
+    <div class="item-title">
+      <label class="toggle">
+        <input type="checkbox" data-action="toggle" data-id="${id}" ${enabled ? "checked" : ""} title="${enabled ? "停用（不参与计算）" : "启用（参与计算）"}" aria-label="${enabled ? "停用" : "启用"}${escapeHtml(name)}" />
+        ${escapeHtml(name)}
+      </label>${suffix}
+    </div>
+  `;
+}
+
+function disabledNote(enabled: boolean): string {
+  return enabled ? "" : " · 未计入";
 }
 
 export function recurringListHtml(items: RecurringItem[]): string {
@@ -319,7 +358,7 @@ export function recurringListHtml(items: RecurringItem[]): string {
   }
 
   return items
-    .map((item) => {
+    .map((item, index) => {
       const end = effectiveEndMonth(item);
       const endText = item.remainingMonths
         ? ` · 共 ${item.remainingMonths} 期`
@@ -330,15 +369,18 @@ export function recurringListHtml(items: RecurringItem[]): string {
       const amountClass =
         item.type === "income" ? "amount-pos" : "amount-neg";
       const amountPrefix = item.type === "income" ? "" : "-";
+      const enabled = isEnabled(item);
+      const total = items.length;
 
       return `
-        <div class="item" data-id="${item.id}">
+        <div class="item ${enabled ? "" : "is-disabled"}" data-id="${item.id}">
           <div class="item-main">
-            <div class="item-title">${escapeHtml(item.name)} <span class="mini-tag">${typeLabel}</span></div>
-            <div class="item-sub">${formatMonthLong(item.startMonth)} 起${endText}</div>
+            ${itemTitle(item.id, item.name, enabled, ` <span class="mini-tag">${typeLabel}</span>`)}
+            <div class="item-sub">${formatMonthLong(item.startMonth)} 起${endText}${disabledNote(enabled)}</div>
           </div>
           <div class="item-amount ${amountClass}">${amountPrefix}${formatMoney(item.amount)}</div>
           <div class="item-actions">
+            ${moveButtons(item.type, item.id, index, total)}
             <button type="button" data-action="duplicate" data-kind="${item.type}" data-id="${item.id}" title="填入这条记录的数据，稍作修改后新增">复制新增</button>
             <button type="button" data-action="edit" data-kind="${item.type}" data-id="${item.id}">编辑</button>
             <button type="button" data-action="delete" data-kind="${item.type}" data-id="${item.id}" class="danger">删除</button>
@@ -349,32 +391,42 @@ export function recurringListHtml(items: RecurringItem[]): string {
     .join("");
 }
 
-export function billListHtml(bills: CardBill[]): string {
+export function billListHtml(
+  bills: CardBill[],
+  fixedItems: RecurringItem[],
+): string {
   if (bills.length === 0) {
     return '<div class="item-empty">还没有添加</div>';
   }
 
-  return [...bills]
-    .sort(
-      (a, b) =>
-        a.month.localeCompare(b.month) || a.cardName.localeCompare(b.cardName),
-    )
-    .map(
-      (bill) => `
-        <div class="item" data-id="${bill.id}">
+  return bills
+    .map((bill, index) => {
+      const enabled = isEnabled(bill);
+      const includedNames = (bill.includedFixedIds ?? [])
+        .map((id) => fixedItems.find((item) => item.id === id)?.name)
+        .filter((name): name is string => Boolean(name));
+      const includedText =
+        includedNames.length > 0
+          ? ` · 含分期：${includedNames.map((name) => escapeHtml(name)).join("、")}`
+          : "";
+      const noteText = bill.note ? ` · ${escapeHtml(bill.note)}` : "";
+
+      return `
+        <div class="item ${enabled ? "" : "is-disabled"}" data-id="${bill.id}">
           <div class="item-main">
-            <div class="item-title">${escapeHtml(bill.cardName)}</div>
-            <div class="item-sub">${formatMonthLong(bill.month)} 还款${bill.note ? ` · ${escapeHtml(bill.note)}` : ""}</div>
+            ${itemTitle(bill.id, bill.cardName, enabled)}
+            <div class="item-sub">${formatMonthLong(bill.month)} 还款${noteText}${includedText}${disabledNote(enabled)}</div>
           </div>
           <div class="item-amount amount-neg">-${formatMoney(bill.amount)}</div>
           <div class="item-actions">
+            ${moveButtons("bill", bill.id, index, bills.length)}
             <button type="button" data-action="duplicate" data-kind="bill" data-id="${bill.id}" title="填入这笔账单的数据，稍作修改后新增">复制新增</button>
             <button type="button" data-action="edit" data-kind="bill" data-id="${bill.id}">编辑</button>
             <button type="button" data-action="delete" data-kind="bill" data-id="${bill.id}" class="danger">删除</button>
           </div>
         </div>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
@@ -383,24 +435,19 @@ export function oneOffListHtml(oneOffs: OneOffItem[]): string {
     return '<div class="item-empty">还没有添加</div>';
   }
 
-  return [...oneOffs]
-    .sort((a, b) => a.month.localeCompare(b.month))
-    .map((item) => {
+  return oneOffs
+    .map((item, index) => {
       const amountClass =
         item.amount < 0 ? "amount-neg" : item.amount > 0 ? "amount-pos" : "";
       return `
         <div class="item ${item.enabled ? "" : "is-disabled"}" data-id="${item.id}">
           <div class="item-main">
-            <div class="item-title">
-              <label class="toggle">
-                <input type="checkbox" data-action="toggle" data-id="${item.id}" ${item.enabled ? "checked" : ""} />
-                ${escapeHtml(item.name)}
-              </label>
-            </div>
-            <div class="item-sub">${formatMonthLong(item.month)}${item.enabled ? "" : " · 未计入"}</div>
+            ${itemTitle(item.id, item.name, item.enabled)}
+            <div class="item-sub">${formatMonthLong(item.month)}${disabledNote(item.enabled)}</div>
           </div>
           <div class="item-amount ${amountClass}">${formatMoney(item.amount, { signed: true })}</div>
           <div class="item-actions">
+            ${moveButtons("oneoff", item.id, index, oneOffs.length)}
             <button type="button" data-action="duplicate" data-kind="oneoff" data-id="${item.id}" title="填入这个事件的数据，稍作修改后新增">复制新增</button>
             <button type="button" data-action="edit" data-kind="oneoff" data-id="${item.id}">编辑</button>
             <button type="button" data-action="delete" data-kind="oneoff" data-id="${item.id}" class="danger">删除</button>
